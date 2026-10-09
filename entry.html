@@ -24,10 +24,16 @@
     .sync{background:#ecfdf5}
     .warn{background:#fff7ed}
     .muted{color:#6b7280;font-size:12px;line-height:1.5}
+    .big-result{font-size:24px;font-weight:800;padding:18px;text-align:center;border-radius:12px;margin-top:10px;background:#ecfdf5}
     table{width:100%;border-collapse:collapse;font-size:13px}
     th,td{padding:9px 6px;border-bottom:1px solid #e5e7eb;text-align:left}
     .count{font-weight:700}
     .pending{font-weight:700}
+    .camera-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    .camera-tools button{background:#374151}
+    .camera-tools button.active{background:#92400e}
+    .camera-note{font-size:13px;line-height:1.55;color:#4b5563;margin-top:8px}
+    .zoom-value{font-weight:700;min-width:54px;display:inline-flex;align-items:center;justify-content:center}
   </style>
 </head>
 <body data-gate-type="入場">
@@ -37,6 +43,17 @@
   <div class="card">
     <div id="reader"></div>
     <div id="status" class="status">カメラを起動しています…</div>
+    <div id="resultBox" class="big-result" style="display:none"></div>
+    <div class="camera-tools">
+      <button id="smallBarcodeBtn" type="button">小さいバーコードモード</button>
+      <button id="zoomOutBtn" type="button">－</button>
+      <span id="zoomValue" class="zoom-value">1.0×</span>
+      <button id="zoomInBtn" type="button">＋</button>
+    </div>
+    <div class="camera-note">
+      小さいバーコードは横向きにし、読み取り枠の幅の半分以上になるように近づけてください。
+      「小さいバーコードモード」で対応端末は自動ズームします。
+    </div>
     <div class="row">
       <button id="startBtn">カメラ開始</button>
       <button id="stopBtn" class="secondary" disabled>停止</button>
@@ -53,9 +70,9 @@
     <strong>Googleスプレッドシート同期</strong>
     <div id="syncStatus" class="status sync">設定確認中…</div>
     <div class="row">
-      <button id="syncBtn" class="secondary">今すぐ同期</button>
+      <button id="syncBtn" class="secondary">未送信分を同期</button>
     </div>
-    <p class="muted">アプリを開いている間は10分ごとに自動同期します。再度開いたときも未送信分を同期します。</p>
+    <p class="muted">通常は読み取り時に即時送信します。通信エラー時は端末に保存し、10分ごと・再表示時に再送します。</p>
   </div>
 
   <div class="card">
@@ -67,7 +84,7 @@
   <div class="card">
     <div class="row" style="justify-content:space-between;align-items:center;margin-top:0">
       <div>
-        <strong>記録一覧</strong>
+        <strong>この端末の記録</strong>
         <span id="count" class="count"></span>
         <span id="pending" class="pending"></span>
       </div>
@@ -76,12 +93,9 @@
         <button id="clearBtn" class="danger">全削除</button>
       </div>
     </div>
-
     <div style="overflow:auto;margin-top:8px">
       <table>
-        <thead>
-          <tr><th>番号</th><th>区分</th><th>端末</th><th>日付</th><th>時刻</th><th>同期</th></tr>
-        </thead>
+        <thead><tr><th>番号</th><th>区分</th><th>回数</th><th>端末</th><th>日付</th><th>時刻</th><th>同期</th></tr></thead>
         <tbody id="logBody"></tbody>
       </table>
     </div>
@@ -90,7 +104,7 @@
 
 <script>
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwG_YJ0VozWTIkOrgDFAfHRZXdVMf6XHbKa9njiSoXkJzKSvJRjbsksrSbBPX-wdc3Gvg/exec";
-const STORAGE_KEY = "event_gate_records_v1";
+const STORAGE_KEY = "event_gate_records_v2";
 const DEVICE_KEY = "event_gate_device_name";
 const SYNC_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -100,9 +114,16 @@ let running = false;
 let lastCode = "";
 let lastScanAt = 0;
 let syncing = false;
+let zoomMin = 1;
+let zoomMax = 1;
+let zoomStep = 0.1;
+let currentZoom = 1;
+let zoomSupported = false;
+let smallMode = false;
 
 const gateType = document.body.dataset.gateType;
 const statusEl = document.getElementById("status");
+const resultBox = document.getElementById("resultBox");
 const syncStatusEl = document.getElementById("syncStatus");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
@@ -111,11 +132,13 @@ const deviceInput = document.getElementById("deviceName");
 const logBody = document.getElementById("logBody");
 const countEl = document.getElementById("count");
 const pendingEl = document.getElementById("pending");
+const smallBarcodeBtn = document.getElementById("smallBarcodeBtn");
+const zoomOutBtn = document.getElementById("zoomOutBtn");
+const zoomInBtn = document.getElementById("zoomInBtn");
+const zoomValue = document.getElementById("zoomValue");
 
 deviceInput.value = localStorage.getItem(DEVICE_KEY) || "";
-deviceInput.addEventListener("input", () => {
-  localStorage.setItem(DEVICE_KEY, deviceInput.value.trim());
-});
+deviceInput.addEventListener("input", () => localStorage.setItem(DEVICE_KEY, deviceInput.value.trim()));
 
 function uid() {
   if (crypto.randomUUID) return crypto.randomUUID();
@@ -136,29 +159,6 @@ function save() {
   render();
 }
 
-function addRecord(code) {
-  const value = String(code || "").trim();
-  if (!value) return;
-  const n = nowParts();
-  const deviceName = deviceInput.value.trim() || "未設定";
-
-  records.unshift({
-    id: uid(),
-    code: value,
-    gateType,
-    deviceName,
-    date: n.date,
-    time: n.time,
-    iso: n.iso,
-    synced: false
-  });
-
-  save();
-  statusEl.className = "status ok";
-  statusEl.textContent = `${gateType}記録：${value}`;
-  if (navigator.vibrate) navigator.vibrate([80,40,80]);
-}
-
 function render() {
   logBody.innerHTML = "";
   const unsynced = records.filter(r => !r.synced).length;
@@ -167,7 +167,7 @@ function render() {
 
   records.forEach(r => {
     const tr = document.createElement("tr");
-    [r.code, r.gateType, r.deviceName || "", r.date, r.time, r.synced ? "済" : "未"].forEach(v => {
+    [r.code, r.gateType, r.globalCount || "-", r.deviceName || "", r.date, r.time, r.synced ? "済":"未"].forEach(v => {
       const td = document.createElement("td");
       td.textContent = v;
       tr.appendChild(td);
@@ -176,59 +176,224 @@ function render() {
   });
 }
 
-async function syncToGoogleSheets() {
-  if (syncing) return;
-  const pending = records.filter(r => !r.synced);
+function showResult(code, count) {
+  resultBox.style.display = "block";
+  resultBox.textContent = `${gateType} ${count}回目　${code}`;
+  statusEl.className = "status ok";
+  statusEl.textContent = "記録しました。";
+  setTimeout(() => { resultBox.style.display = "none"; }, 5000);
+}
 
-  if (!pending.length) {
-    syncStatusEl.className = "status sync";
-    syncStatusEl.textContent = "未送信データはありません。";
-    return;
-  }
+function recordOne(code) {
+  const value = String(code || "").trim();
+  if (!value) return;
 
+  const n = nowParts();
+  const rec = {
+    id: uid(),
+    code: value,
+    gateType,
+    deviceName: deviceInput.value.trim() || "未設定",
+    date: n.date,
+    time: n.time,
+    iso: n.iso,
+    synced: false,
+    globalCount: null
+  };
+
+  records.unshift(rec);
+  save();
+  sendSingleRecord(rec);
+
+  if (navigator.vibrate) navigator.vibrate([80,40,80]);
+}
+
+function sendSingleRecord(rec) {
   if (!GOOGLE_SCRIPT_URL.startsWith("https://script.google.com/")) {
     syncStatusEl.className = "status warn";
     syncStatusEl.textContent = "Google Apps ScriptのURLがまだ設定されていません。";
     return;
   }
 
+  const callbackName = "__gatecb_" + rec.id.replace(/[^a-zA-Z0-9_]/g, "");
+  const params = new URLSearchParams({
+    action: "record",
+    callback: callbackName,
+    id: rec.id,
+    code: rec.code,
+    gateType: rec.gateType,
+    deviceName: rec.deviceName,
+    date: rec.date,
+    time: rec.time,
+    iso: rec.iso
+  });
+
+  const script = document.createElement("script");
+  let done = false;
+
+  window[callbackName] = function(data) {
+    done = true;
+    try {
+      if (data && data.ok) {
+        records = records.map(r => r.id === rec.id ? {...r, synced:true, globalCount:data.count} : r);
+        save();
+        showResult(rec.code, data.count);
+        syncStatusEl.className = "status sync";
+        syncStatusEl.textContent = "即時同期しました。";
+      }
+    } finally {
+      delete window[callbackName];
+      script.remove();
+    }
+  };
+
+  script.onerror = function() {
+    if (!done) {
+      delete window[callbackName];
+      script.remove();
+      syncStatusEl.className = "status warn";
+      syncStatusEl.textContent = "通信できなかったため端末に保存しました。後で自動再送します。";
+    }
+  };
+
+  script.src = GOOGLE_SCRIPT_URL + "?" + params.toString();
+  document.body.appendChild(script);
+
+  setTimeout(() => {
+    if (!done && window[callbackName]) {
+      delete window[callbackName];
+      script.remove();
+      syncStatusEl.className = "status warn";
+      syncStatusEl.textContent = "即時同期が確認できませんでした。後で再送します。";
+    }
+  }, 10000);
+}
+
+async function syncPending() {
+  if (syncing) return;
+  const pending = records.filter(r => !r.synced);
+  if (!pending.length) {
+    syncStatusEl.className = "status sync";
+    syncStatusEl.textContent = "未送信データはありません。";
+    return;
+  }
+  if (!GOOGLE_SCRIPT_URL.startsWith("https://script.google.com/")) return;
+
   syncing = true;
-  syncStatusEl.className = "status sync";
-  syncStatusEl.textContent = `${pending.length}件を送信中…`;
+  syncStatusEl.textContent = `${pending.length}件を再送中…`;
 
   try {
     await fetch(GOOGLE_SCRIPT_URL, {
-      method: "POST",
-      mode: "no-cors",
-      headers: {"Content-Type":"text/plain;charset=utf-8"},
-      body: JSON.stringify({records: pending})
+      method:"POST",
+      mode:"no-cors",
+      headers:{"Content-Type":"text/plain;charset=utf-8"},
+      body:JSON.stringify({records:pending})
     });
-
     const ids = new Set(pending.map(r => r.id));
     records = records.map(r => ids.has(r.id) ? {...r, synced:true} : r);
     save();
-
-    const t = new Date().toLocaleTimeString("ja-JP", {hour12:false});
-    syncStatusEl.textContent = `同期しました（${t}）`;
+    syncStatusEl.className = "status sync";
+    syncStatusEl.textContent = "未送信分を送信しました。";
   } catch(e) {
     syncStatusEl.className = "status warn";
-    syncStatusEl.textContent = "同期できませんでした。通信状態を確認してください。";
+    syncStatusEl.textContent = "再送できませんでした。";
   } finally {
     syncing = false;
   }
 }
+
+
+function clampZoom(v) {
+  return Math.max(zoomMin, Math.min(zoomMax, v));
+}
+
+function updateZoomDisplay() {
+  zoomValue.textContent = currentZoom.toFixed(1) + "×";
+  zoomOutBtn.disabled = !zoomSupported || currentZoom <= zoomMin + 0.001;
+  zoomInBtn.disabled = !zoomSupported || currentZoom >= zoomMax - 0.001;
+}
+
+async function setZoom(v) {
+  if (!scanner || !running || !zoomSupported) return;
+  const target = clampZoom(v);
+  try {
+    await scanner.applyVideoConstraints({advanced:[{zoom:target}]});
+    currentZoom = target;
+    updateZoomDisplay();
+  } catch(e) {
+    console.log("zoom unsupported", e);
+  }
+}
+
+async function setupCameraForSmallCodes() {
+  if (!scanner || !running) return;
+
+  // Continuous autofocus, when the Android camera exposes it.
+  try {
+    const caps = scanner.getRunningTrackCapabilities();
+    if (caps && Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous")) {
+      try {
+        await scanner.applyVideoConstraints({advanced:[{focusMode:"continuous"}]});
+      } catch(e) {}
+    }
+
+    if (caps && caps.zoom && typeof caps.zoom.min === "number" && typeof caps.zoom.max === "number") {
+      zoomSupported = caps.zoom.max > caps.zoom.min;
+      zoomMin = caps.zoom.min;
+      zoomMax = caps.zoom.max;
+      zoomStep = caps.zoom.step || 0.1;
+      currentZoom = Math.max(zoomMin, Math.min(zoomMax, 1));
+      updateZoomDisplay();
+    } else {
+      zoomSupported = false;
+      zoomMin = zoomMax = currentZoom = 1;
+      updateZoomDisplay();
+    }
+  } catch(e) {
+    zoomSupported = false;
+    updateZoomDisplay();
+  }
+}
+
+async function enableSmallBarcodeMode() {
+  smallMode = !smallMode;
+  smallBarcodeBtn.classList.toggle("active", smallMode);
+
+  if (!zoomSupported) {
+    statusEl.className = "status warn";
+    statusEl.textContent = "この端末ではブラウザからのカメラズーム操作に対応していません。バーコードを枠内で大きく見える位置まで近づけてください。";
+    return;
+  }
+
+  if (smallMode) {
+    // Use a moderate zoom first. Excessive zoom can make close-up focus worse.
+    const target = Math.min(zoomMax, Math.max(zoomMin, 2.0));
+    await setZoom(target);
+    statusEl.className = "status";
+    statusEl.textContent = "小さいバーコードモード：バーコードを横向きにして枠の中央へ合わせてください。";
+  } else {
+    await setZoom(Math.max(zoomMin, 1));
+    statusEl.className = "status";
+    statusEl.textContent = "通常モードに戻しました。";
+  }
+}
+
+smallBarcodeBtn.addEventListener("click", enableSmallBarcodeMode);
+zoomInBtn.addEventListener("click", () => setZoom(currentZoom + zoomStep));
+zoomOutBtn.addEventListener("click", () => setZoom(currentZoom - zoomStep));
 
 function onScanSuccess(decodedText) {
   const now = Date.now();
   if (decodedText && (decodedText !== lastCode || now - lastScanAt > 3000)) {
     lastCode = decodedText;
     lastScanAt = now;
-    addRecord(decodedText);
+    recordOne(decodedText);
   }
 }
 
 async function startScanner() {
   if (running) return;
+
   if (!window.isSecureContext) {
     statusEl.textContent = "カメラ利用にはHTTPSで開く必要があります。";
     return;
@@ -239,13 +404,22 @@ async function startScanner() {
     statusEl.className = "status";
     statusEl.textContent = "背面カメラを起動しています…";
 
+    // Androidの複数カメラで、できるだけ背面カメラを明示選択。
+    let cameraConfig = {facingMode:"environment"};
+    try {
+      const cameras = await Html5Qrcode.getCameras();
+      const rear = cameras.find(c => /back|rear|environment|背面/i.test(c.label || ""));
+      if (rear) cameraConfig = {deviceId:{exact:rear.id}};
+    } catch(e) {}
+
     await scanner.start(
-      {facingMode:"environment"},
+      cameraConfig,
       {
-        fps:12,
+        // 小さい1次元バーコード用に解析回数を増やし、横長・低めの解析領域にする。
+        fps:20,
         qrbox:(w,h)=>({
-          width:Math.floor(w*0.9),
-          height:Math.floor(Math.min(h*0.45,220))
+          width:Math.max(240, Math.floor(w * 0.96)),
+          height:Math.max(90, Math.min(150, Math.floor(h * 0.28)))
         }),
         aspectRatio:1.777778,
         disableFlip:true
@@ -257,51 +431,46 @@ async function startScanner() {
     running = true;
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    statusEl.textContent = "バーコードを枠内に映してください。";
+    statusEl.textContent = "バーコードを横向きにして、枠の中央へ大きく映してください。";
+
+    await setupCameraForSmallCodes();
+
   } catch(e) {
     running = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
     statusEl.textContent = "カメラを起動できませんでした。Chromeのサイト設定でカメラを許可してください。";
+    console.error(e);
   }
 }
 
 async function stopScanner() {
   if (!scanner || !running) return;
-  try {
-    await scanner.stop();
-    await scanner.clear();
-  } catch(e) {}
-
+  try { await scanner.stop(); await scanner.clear(); } catch(e) {}
   scanner = null;
   running = false;
+  zoomSupported = false;
+  zoomMin = zoomMax = currentZoom = 1;
+  smallMode = false;
+  smallBarcodeBtn.classList.remove("active");
+  updateZoomDisplay();
   startBtn.disabled = false;
   stopBtn.disabled = true;
-  statusEl.className = "status";
-  statusEl.textContent = "カメラを停止しました。";
 }
 
 startBtn.addEventListener("click", startScanner);
 stopBtn.addEventListener("click", stopScanner);
-document.getElementById("syncBtn").addEventListener("click", syncToGoogleSheets);
-
+document.getElementById("syncBtn").addEventListener("click", syncPending);
 document.getElementById("manualAddBtn").addEventListener("click", () => {
-  addRecord(manualInput.value);
+  recordOne(manualInput.value);
   manualInput.value = "";
-  manualInput.focus();
 });
-manualInput.addEventListener("keydown", e => {
-  if (e.key === "Enter") document.getElementById("manualAddBtn").click();
-});
+manualInput.addEventListener("keydown", e => { if(e.key==="Enter") document.getElementById("manualAddBtn").click(); });
 
 document.getElementById("csvBtn").addEventListener("click", () => {
-  const rows = [["ID","番号","区分","端末名","読取日","読取時刻","同期"]];
-  [...records].reverse().forEach(r => rows.push([
-    r.id,r.code,r.gateType,r.deviceName || "",r.date,r.time,r.synced ? "済":"未"
-  ]));
-  const csv = "\uFEFF" + rows.map(row =>
-    row.map(v => '"' + String(v).replace(/"/g,'""') + '"').join(",")
-  ).join("\r\n");
+  const rows = [["ID","番号","区分","回数","端末名","読取日","読取時刻","同期"]];
+  [...records].reverse().forEach(r => rows.push([r.id,r.code,r.gateType,r.globalCount||"",r.deviceName||"",r.date,r.time,r.synced?"済":"未"]));
+  const csv = "\uFEFF" + rows.map(row => row.map(v => '"' + String(v).replace(/"/g,'""') + '"').join(",")).join("\r\n");
   const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -312,7 +481,7 @@ document.getElementById("csvBtn").addEventListener("click", () => {
 });
 
 document.getElementById("clearBtn").addEventListener("click", () => {
-  if (!confirm("この端末内の記録をすべて削除しますか？ Googleスプレッドシート側は削除されません。")) return;
+  if (!confirm("この端末内の記録をすべて削除しますか？")) return;
   records = [];
   save();
 });
@@ -320,14 +489,14 @@ document.getElementById("clearBtn").addEventListener("click", () => {
 window.addEventListener("load", () => {
   render();
   setTimeout(startScanner, 250);
-  setTimeout(syncToGoogleSheets, 1500);
-  setInterval(syncToGoogleSheets, SYNC_INTERVAL_MS);
+  setTimeout(syncPending, 1500);
+  setInterval(syncPending, SYNC_INTERVAL_MS);
 });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     if (!running) setTimeout(startScanner, 300);
-    setTimeout(syncToGoogleSheets, 800);
+    setTimeout(syncPending, 800);
   }
 });
 </script>
