@@ -29,6 +29,7 @@
     th,td{padding:9px 6px;border-bottom:1px solid #e5e7eb;text-align:left}
     .count{font-weight:700}
     .pending{font-weight:700}
+    a{color:#1d4ed8}
     .camera-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
     .camera-tools button{background:#374151}
     .camera-tools button.active{background:#92400e}
@@ -39,6 +40,22 @@
 <body data-gate-type="入場">
 <div class="wrap">
   <h1>入場者を読み取る</h1>
+
+  <div class="card">
+    <strong>Binary Eyeで読み取る</strong>
+    <div class="row">
+      <button id="binaryEyeBtn" style="font-size:20px;padding:16px 20px;">Binary Eyeを起動</button>
+    </div>
+    <p class="muted">
+      小さいバーコードはこちらを推奨します。読み取り後、自動的にこのページへ戻って記録します。
+    </p>
+    <p class="muted">
+      Binary Eyeが入っていない場合は
+      <a href="https://play.google.com/store/apps/details?id=de.markusfisch.android.binaryeye"
+         target="_blank" rel="noopener">Google Playからインストール</a>
+    </p>
+  </div>
+
 
   <div class="card">
     <div id="reader"></div>
@@ -132,6 +149,7 @@ const deviceInput = document.getElementById("deviceName");
 const logBody = document.getElementById("logBody");
 const countEl = document.getElementById("count");
 const pendingEl = document.getElementById("pending");
+const binaryEyeBtn = document.getElementById("binaryEyeBtn");
 const smallBarcodeBtn = document.getElementById("smallBarcodeBtn");
 const zoomOutBtn = document.getElementById("zoomOutBtn");
 const zoomInBtn = document.getElementById("zoomInBtn");
@@ -302,6 +320,44 @@ async function syncPending() {
   }
 }
 
+
+
+function makeBinaryEyeReturnUrl() {
+  const base = location.origin + location.pathname;
+  return base + "?be_result={RESULT}&be_format={FORMAT}";
+}
+
+function openBinaryEye() {
+  const returnTemplate = makeBinaryEyeReturnUrl();
+
+  let encodedReturn = encodeURIComponent(returnTemplate)
+    .replace(/%7BRESULT%7D/gi, "{RESULT}")
+    .replace(/%7BFORMAT%7D/gi, "{FORMAT}");
+
+  const deepLink = "binaryeye://scan?ret=" + encodedReturn;
+
+  statusEl.className = "status";
+  statusEl.textContent = "Binary Eyeを起動しています…";
+  window.location.href = deepLink;
+}
+
+function handleBinaryEyeResult() {
+  const params = new URLSearchParams(location.search);
+  const result = params.get("be_result");
+  if (!result) return false;
+
+  const format = params.get("be_format") || "";
+
+  history.replaceState({}, document.title, location.pathname);
+
+  statusEl.className = "status ok";
+  statusEl.textContent = "Binary Eye読み取り：" + result + (format ? "（" + format + "）" : "");
+
+  recordOne(result);
+  return true;
+}
+
+binaryEyeBtn.addEventListener("click", openBinaryEye);
 
 function clampZoom(v) {
   return Math.max(zoomMin, Math.min(zoomMax, v));
@@ -488,7 +544,15 @@ document.getElementById("clearBtn").addEventListener("click", () => {
 
 window.addEventListener("load", () => {
   render();
-  setTimeout(startScanner, 250);
+
+  const cameBackFromBinaryEye = handleBinaryEyeResult();
+
+  if (cameBackFromBinaryEye) {
+    setTimeout(startScanner, 1800);
+  } else {
+    setTimeout(startScanner, 250);
+  }
+
   setTimeout(syncPending, 1500);
   setInterval(syncPending, SYNC_INTERVAL_MS);
 });
