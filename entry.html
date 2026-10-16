@@ -42,14 +42,13 @@
   <h1>入場者を読み取る</h1>
 
   <div class="card">
-    <strong>Binary Eyeで読み取る</strong>
+    <strong id="scannerTitle">バーコードを読み取る</strong>
     <div class="row">
       <button id="binaryEyeBtn" style="font-size:20px;padding:16px 20px;">Binary Eyeを起動</button>
+      <button id="iosCameraBtn" class="secondary" style="font-size:20px;padding:16px 20px;display:none;">iPad / iPhoneでカメラ読取</button>
     </div>
-    <p class="muted">
-      小さいバーコードはこちらを推奨します。読み取り後、自動的にこのページへ戻って記録します。
-    </p>
-    <p class="muted">
+    <p id="platformGuide" class="muted"></p>
+    <p id="binaryEyeInstall" class="muted">
       Binary Eyeが入っていない場合は
       <a href="https://play.google.com/store/apps/details?id=de.markusfisch.android.binaryeye"
          target="_blank" rel="noopener">Google Playからインストール</a>
@@ -67,6 +66,7 @@
       <span id="zoomValue" class="zoom-value">1.0×</span>
       <button id="zoomInBtn" type="button">＋</button>
     </div>
+    <div id="iosTip" class="camera-note" style="display:none">iPadではSafariの背面カメラを使用します。小さいバーコードは横向きにし、少し離してピントを合わせてください。</div>
     <div class="camera-note">
       小さいバーコードは横向きにし、読み取り枠の幅の半分以上になるように近づけてください。
       「小さいバーコードモード」で対応端末は自動ズームします。
@@ -150,6 +150,11 @@ const logBody = document.getElementById("logBody");
 const countEl = document.getElementById("count");
 const pendingEl = document.getElementById("pending");
 const binaryEyeBtn = document.getElementById("binaryEyeBtn");
+const iosCameraBtn = document.getElementById("iosCameraBtn");
+const scannerTitle = document.getElementById("scannerTitle");
+const platformGuide = document.getElementById("platformGuide");
+const binaryEyeInstall = document.getElementById("binaryEyeInstall");
+const iosTip = document.getElementById("iosTip");
 const smallBarcodeBtn = document.getElementById("smallBarcodeBtn");
 const zoomOutBtn = document.getElementById("zoomOutBtn");
 const zoomInBtn = document.getElementById("zoomInBtn");
@@ -322,6 +327,40 @@ async function syncPending() {
 
 
 
+
+function isIOSDevice() {
+  const ua = navigator.userAgent || "";
+  return /iPad|iPhone|iPod/i.test(ua) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function isAndroidDevice() {
+  return /Android/i.test(navigator.userAgent || "");
+}
+
+function configurePlatformUI() {
+  if (isIOSDevice()) {
+    scannerTitle.textContent = "iPad / iPhoneで読み取る";
+    binaryEyeBtn.style.display = "none";
+    binaryEyeInstall.style.display = "none";
+    iosCameraBtn.style.display = "inline-block";
+    iosTip.style.display = "block";
+    platformGuide.textContent = "iPad / iPhoneではSafariのカメラで読み取ります。Binary EyeはAndroid専用です。";
+  } else if (isAndroidDevice()) {
+    scannerTitle.textContent = "Binary Eyeで読み取る";
+    binaryEyeBtn.style.display = "inline-block";
+    iosCameraBtn.style.display = "none";
+    binaryEyeInstall.style.display = "block";
+    platformGuide.textContent = "AndroidではBinary Eyeを推奨します。読み取り後は自動でこのページへ戻ります。";
+  } else {
+    scannerTitle.textContent = "バーコードを読み取る";
+    binaryEyeBtn.style.display = "none";
+    binaryEyeInstall.style.display = "none";
+    iosCameraBtn.style.display = "inline-block";
+    platformGuide.textContent = "この端末ではブラウザのカメラで読み取ります。";
+  }
+}
+
 function makeBinaryEyeReturnUrl() {
   const base = location.origin + location.pathname;
   return base + "?be_result={RESULT}&be_format={FORMAT}";
@@ -358,6 +397,11 @@ function handleBinaryEyeResult() {
 }
 
 binaryEyeBtn.addEventListener("click", openBinaryEye);
+iosCameraBtn.addEventListener("click", async () => {
+  if (!running) await startScanner();
+  statusEl.className = "status";
+  statusEl.textContent = "バーコードを横向きにして、枠の中央へ大きく映してください。";
+});
 
 function clampZoom(v) {
   return Math.max(zoomMin, Math.min(zoomMax, v));
@@ -460,19 +504,20 @@ async function startScanner() {
     statusEl.className = "status";
     statusEl.textContent = "背面カメラを起動しています…";
 
-    // Androidの複数カメラで、できるだけ背面カメラを明示選択。
     let cameraConfig = {facingMode:"environment"};
-    try {
-      const cameras = await Html5Qrcode.getCameras();
-      const rear = cameras.find(c => /back|rear|environment|背面/i.test(c.label || ""));
-      if (rear) cameraConfig = {deviceId:{exact:rear.id}};
-    } catch(e) {}
+    if (!isIOSDevice()) {
+      try {
+        const cameras = await Html5Qrcode.getCameras();
+        const rear = cameras.find(c => /back|rear|environment|背面/i.test(c.label || ""));
+        if (rear) cameraConfig = {deviceId:{exact:rear.id}};
+      } catch(e) {}
+    }
 
     await scanner.start(
       cameraConfig,
       {
         // 小さい1次元バーコード用に解析回数を増やし、横長・低めの解析領域にする。
-        fps:20,
+        fps:isIOSDevice() ? 15 : 20,
         qrbox:(w,h)=>({
           width:Math.max(240, Math.floor(w * 0.96)),
           height:Math.max(90, Math.min(150, Math.floor(h * 0.28)))
@@ -543,12 +588,16 @@ document.getElementById("clearBtn").addEventListener("click", () => {
 });
 
 window.addEventListener("load", () => {
+  configurePlatformUI();
   render();
 
   const cameBackFromBinaryEye = handleBinaryEyeResult();
 
   if (cameBackFromBinaryEye) {
     setTimeout(startScanner, 1800);
+  } else if (isIOSDevice()) {
+    statusEl.className = "status";
+    statusEl.textContent = "「iPad / iPhoneでカメラ読取」を押してください。";
   } else {
     setTimeout(startScanner, 250);
   }
