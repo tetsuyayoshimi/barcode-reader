@@ -124,6 +124,8 @@ const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwG_YJ0VozWTI
 const STORAGE_KEY = "event_gate_records_v2";
 const DEVICE_KEY = "event_gate_device_name";
 const SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const DUPLICATE_BLOCK_MS = 10 * 1000;
+const LAST_SCAN_KEY = "event_gate_last_scan_v1";
 
 let records = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
 let scanner = null;
@@ -207,9 +209,40 @@ function showResult(code, count) {
   setTimeout(() => { resultBox.style.display = "none"; }, 5000);
 }
 
+
+function getLastScanInfo() {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_SCAN_KEY) || "{}");
+  } catch(e) {
+    return {};
+  }
+}
+
+function isBlockedDuplicate(code) {
+  const info = getLastScanInfo();
+  if (!info || info.code !== code || info.gateType !== gateType) return false;
+  return (Date.now() - Number(info.at || 0)) < DUPLICATE_BLOCK_MS;
+}
+
+function rememberScan(code) {
+  localStorage.setItem(LAST_SCAN_KEY, JSON.stringify({
+    code: code,
+    gateType: gateType,
+    at: Date.now()
+  }));
+}
+
 function recordOne(code) {
   const value = String(code || "").trim();
   if (!value) return;
+
+  if (isBlockedDuplicate(value)) {
+    statusEl.className = "status warn";
+    statusEl.textContent = "同じバーコードの連続読取を防止しました。10秒後から再度読み取れます。";
+    return;
+  }
+
+  rememberScan(value);
 
   const n = nowParts();
   const rec = {
@@ -483,12 +516,14 @@ zoomInBtn.addEventListener("click", () => setZoom(currentZoom + zoomStep));
 zoomOutBtn.addEventListener("click", () => setZoom(currentZoom - zoomStep));
 
 function onScanSuccess(decodedText) {
+  if (!decodedText) return;
+
   const now = Date.now();
-  if (decodedText && (decodedText !== lastCode || now - lastScanAt > 3000)) {
-    lastCode = decodedText;
-    lastScanAt = now;
-    recordOne(decodedText);
-  }
+  if (decodedText === lastCode && now - lastScanAt < 10000) return;
+
+  lastCode = decodedText;
+  lastScanAt = now;
+  recordOne(decodedText);
 }
 
 async function startScanner() {
@@ -594,7 +629,9 @@ window.addEventListener("load", () => {
   const cameBackFromBinaryEye = handleBinaryEyeResult();
 
   if (cameBackFromBinaryEye) {
-    setTimeout(startScanner, 1800);
+    // Binary Eyeから戻った直後にブラウザカメラを起動すると
+    // 同じバーコードを再度拾うことがあるため自動起動しない。
+    statusEl.className = "status ok";
   } else if (isIOSDevice()) {
     statusEl.className = "status";
     statusEl.textContent = "「iPad / iPhoneでカメラ読取」を押してください。";
