@@ -368,34 +368,51 @@ async function stopScanner() {
   running = false;
 }
 
-function makeBinaryEyeCallbackUrl() {
-  const cb = new URL(SCRIPT_URL);
-  cb.searchParams.set("source", "binaryeye");
-  cb.searchParams.set("gateType", GATE_TYPE);
-  cb.searchParams.set("deviceName", getDeviceName());
-  return cb.toString();
-}
-
 function makeBinaryEyeReturnUrl() {
   const u = new URL(location.href);
   u.searchParams.delete("be_result");
   u.searchParams.delete("be_format");
-  return u.toString();
+
+  const base = u.toString();
+  const sep = base.includes("?") ? "&" : "?";
+
+  // Binary Eyeが {RESULT}/{FORMAT} を実際の読取値へ置換する。
+  return `${base}${sep}be_result={RESULT}&be_format={FORMAT}`;
 }
 
 function openBinaryEye() {
-  // Binary Eye公式の continuous + callback 方式。
-  // 読取結果はBinary EyeからApps Scriptへ直接JSON POSTされる。
-  const callback = encodeURIComponent(makeBinaryEyeCallbackUrl());
-  const ret = encodeURIComponent(makeBinaryEyeReturnUrl());
+  const template = makeBinaryEyeReturnUrl();
 
-  location.href =
-    `binaryeye://scan?continuous=true&callback=${callback}&ret=${ret}`;
+  // Binary Eye公式仕様に合わせ、
+  // 戻り先URLはエンコードするが置換記号はそのまま残す。
+  const ret = encodeURIComponent(template)
+    .replace(/%7BRESULT%7D/gi, "{RESULT}")
+    .replace(/%7BFORMAT%7D/gi, "{FORMAT}");
+
+  // 公式のHTTPS Deep Linkを使用。
+  // AndroidでBinary Eyeがインストール済みならアプリが起動する。
+  location.href = `https://markusfisch.de/BinaryEye?ret=${ret}`;
 }
 
 function handleBinaryEyeReturn() {
-  // callback方式では読み取り結果をURLで受け取らない。
-  return false;
+  const u = new URL(location.href);
+  const r = u.searchParams.get("be_result");
+
+  if (r === null) return false;
+
+  u.searchParams.delete("be_result");
+  u.searchParams.delete("be_format");
+  history.replaceState({}, "", u.toString());
+
+  const code = normalizeCode(r);
+
+  if (!code) {
+    setStatus("Binary Eyeから有効なバーコード値を受け取れませんでした。登録していません。", "warn");
+    return true;
+  }
+
+  processScan(code);
+  return true;
 }
 
 function configureUI() {
@@ -406,7 +423,7 @@ function configureUI() {
   if (isAndroidDevice()) {
     beBtn.style.display = "inline-block";
     camBtn.style.display = "inline-block";
-    guide.textContent = "Android：Binary Eyeを起動すると連続読取モードになります。読み取った内容はBinary Eyeから直接登録されます。終了するときはBinary Eyeで「Finish scanning」または戻る操作をしてください。";
+    guide.textContent = "Android：Binary Eyeで1件読み取ると、このページへ戻って自動登録します。";
   } else {
     beBtn.style.display = "none";
     camBtn.style.display = "inline-block";
@@ -435,7 +452,7 @@ window.addEventListener("load", () => {
   if (removed > 0) {
     setStatus(`過去の無効な未送信データを ${removed} 件削除しました。`, "warn");
   }
-  const returned = false;
+  const returned = handleBinaryEyeReturn();
   if (!returned && !isIOSDevice()) {
     setTimeout(startScanner, 300);
   } else if (isIOSDevice()) {
