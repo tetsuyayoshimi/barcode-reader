@@ -369,16 +369,28 @@ async function stopScanner() {
 }
 
 function makeBinaryEyeReturnUrl() {
+  // Binary Eye公式仕様のURIテンプレート。
+  // {RESULT} と {FORMAT} はBinary Eye側で置換されるため、
+  // 最終的にこの記号をそのまま残して渡す必要がある。
   const u = new URL(location.href);
   u.searchParams.delete("be_result");
   u.searchParams.delete("be_format");
-  u.searchParams.set("be_result", "{RESULT}");
-  u.searchParams.set("be_format", "{FORMAT}");
-  return u.toString();
+
+  const base = u.toString();
+  const sep = base.includes("?") ? "&" : "?";
+
+  return `${base}${sep}be_result={RESULT}&be_format={FORMAT}`;
 }
 
 function openBinaryEye() {
-  const ret = encodeURIComponent(makeBinaryEyeReturnUrl());
+  const template = makeBinaryEyeReturnUrl();
+
+  // URL全体はエンコードするが、Binary Eyeが置換する
+  // {RESULT}/{FORMAT} だけは文字列として残す。
+  const ret = encodeURIComponent(template)
+    .replace(/%7BRESULT%7D/gi, "{RESULT}")
+    .replace(/%7BFORMAT%7D/gi, "{FORMAT}");
+
   location.href = `binaryeye://scan?ret=${ret}`;
 }
 
@@ -412,7 +424,7 @@ function configureUI() {
   if (isAndroidDevice()) {
     beBtn.style.display = "inline-block";
     camBtn.style.display = "inline-block";
-    guide.textContent = "Android：Binary Eye推奨。ブラウザカメラも使用できます。";
+    guide.textContent = "Android：Binary Eyeで読み取る場合は「Binary Eyeを起動」を押してください。読み取り後、自動でこのページへ戻ります。";
   } else {
     beBtn.style.display = "none";
     camBtn.style.display = "inline-block";
