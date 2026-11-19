@@ -153,7 +153,14 @@ function showResult(code, count, synced=true) {
 }
 
 function normalizeCode(raw) {
-  return String(raw ?? "").trim();
+  const value = String(raw ?? "").trim();
+
+  // Binary Eyeの戻り値プレースホルダーがそのまま返った場合は無効扱い。
+  if (!value) return "";
+  if (value === "{RESULT}" || value === "{FORMAT}") return "";
+  if (/^\{[A-Z_]+\}$/.test(value)) return "";
+
+  return value;
 }
 
 // 同一バーコードの「かざしっぱなし」による連続検出だけを抑止。
@@ -212,8 +219,15 @@ async function sendRecord(rec) {
 }
 
 async function processScan(raw) {
+  const rawValue = String(raw ?? "").trim();
   const code = normalizeCode(raw);
-  if (!code) return;
+
+  if (!code) {
+    if (rawValue) {
+      setStatus("無効な読み取り結果を検出しました。登録していません。", "warn");
+    }
+    return;
+  }
 
   if (!shouldAcceptScan(code)) {
     setStatus("同じバーコードの連続検出を無視しました。", "warn");
@@ -344,11 +358,22 @@ function openBinaryEye() {
 function handleBinaryEyeReturn() {
   const u = new URL(location.href);
   const r = u.searchParams.get("be_result");
-  if (!r) return false;
+
+  if (r === null) return false;
+
   u.searchParams.delete("be_result");
   u.searchParams.delete("be_format");
   history.replaceState({}, "", u.toString());
-  processScan(r);
+
+  const code = normalizeCode(r);
+
+  // {RESULT} 等がそのまま返ってきた場合は絶対に登録しない。
+  if (!code) {
+    setStatus("Binary Eyeから有効なバーコード値を受け取れませんでした。登録していません。", "warn");
+    return true;
+  }
+
+  processScan(code);
   return true;
 }
 
