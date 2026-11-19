@@ -105,14 +105,34 @@ deviceEl.value = getDeviceName();
 deviceEl.addEventListener("change", saveDeviceName);
 deviceEl.addEventListener("blur", saveDeviceName);
 
+function isInvalidQueuedCode(raw) {
+  const v = String(raw ?? "").trim();
+  if (!v) return true;
+  if (v === "{RESULT}" || v === "{FORMAT}") return true;
+  if (/^\{[A-Z_]+\}$/.test(v)) return true;
+  return false;
+}
+
 function getQueue() {
-  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); }
-  catch(e) { return []; }
+  try {
+    const q = JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]");
+    if (!Array.isArray(q)) return [];
+
+    // 過去に残った {RESULT} などの無効データを自動削除
+    const cleaned = q.filter(x => x && !isInvalidQueuedCode(x.code));
+    if (cleaned.length !== q.length) {
+      localStorage.setItem(QUEUE_KEY, JSON.stringify(cleaned));
+    }
+    return cleaned;
+  } catch(e) {
+    return [];
+  }
 }
 function saveQueue(q) {
   localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
 }
 function enqueue(rec) {
+  if (!rec || isInvalidQueuedCode(rec.code)) return;
   const q = getQueue();
   q.push(rec);
   saveQueue(q);
@@ -267,7 +287,14 @@ async function processScan(raw) {
 async function retryQueue() {
   const q = getQueue();
   if (!q.length) return;
+
   for (const rec of q.slice()) {
+    // 念のため再送直前にも無効データを除外
+    if (!rec || isInvalidQueuedCode(rec.code)) {
+      if (rec && rec.id) removeQueuedId(rec.id);
+      continue;
+    }
+
     try {
       await sendRecord(rec);
       removeQueuedId(rec.id);
@@ -399,7 +426,21 @@ document.getElementById("binaryEyeBtn").addEventListener("click", openBinaryEye)
 document.getElementById("cameraBtn").addEventListener("click", startScanner);
 
 window.addEventListener("load", () => {
+  const before = (() => {
+    try {
+      const q = JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]");
+      return Array.isArray(q) ? q.length : 0;
+    } catch(e) { return 0; }
+  })();
+
+  const cleaned = getQueue();
+  const removed = Math.max(0, before - cleaned.length);
+
   configureUI();
+
+  if (removed > 0) {
+    setStatus(`過去の無効な未送信データを ${removed} 件削除しました。`, "warn");
+  }
   const returned = handleBinaryEyeReturn();
   if (!returned && !isIOSDevice()) {
     setTimeout(startScanner, 300);
